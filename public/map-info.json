@@ -1,0 +1,8 @@
+{
+  "sourceTriangles": 7071310,
+  "displayTriangles": 358162,
+  "displayVertices": 126842,
+  "clusterMeters": 0.012,
+  "mapReady": false,
+  "basis": "Three(x,y,z) = CAD(x,z,-y)"
+}

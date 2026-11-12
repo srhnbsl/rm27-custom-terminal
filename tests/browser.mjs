@@ -1,0 +1,30 @@
+import {chromium} from '@playwright/test';
+import aedes from 'aedes';
+import net from 'node:net';
+import mqtt from 'mqtt';
+import protobuf from 'protobufjs';
+import {readFileSync,mkdirSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const broker=aedes(),tcp=net.createServer(broker.handle);await new Promise(r=>tcp.listen(18883,'127.0.0.1',r));
+const root=protobuf.parse(readFileSync(new URL('../protocol.proto',import.meta.url),'utf8'),{keepCase:true}).root;
+const browser=await chromium.launch({channel:'msedge',headless:true,args:['--enable-webgl','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+const page=await browser.newPage({viewport:{width:1600,height:950}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+let publisher;
+try{
+ await page.goto('http://127.0.0.1:5173');await page.waitForLoadState('networkidle');
+ await page.waitForFunction(()=>window.rm27?.getScene().modelLoaded,{timeout:30000});await page.waitForTimeout(1600);
+ assert.equal(await page.evaluate(()=>window.rm27.getScene().visibleRobots),8);
+ mkdirSync('artifacts',{recursive:true});await page.screenshot({path:'artifacts/desktop.png'});
+ await page.getByRole('button',{name:'打开连接与坐标设置'}).click();await page.selectOption('select[name=mode]','live');await page.fill('input[name=host]','127.0.0.1');await page.fill('input[name=port]','18883');await page.getByRole('button',{name:'应用并连接'}).click();
+ await page.waitForFunction(()=>document.getElementById('connection-text').textContent.includes('等待新数据'));
+ assert.equal(await page.evaluate(()=>window.rm27.getScene().visibleRobots),0);
+ publisher=mqtt.connect('mqtt://127.0.0.1:18883',{clientId:'fixture-publisher'});await new Promise((r,j)=>{publisher.on('connect',r);publisher.on('error',j);});
+ for(const [topic,data] of [['GameStatus',{current_round:2,current_stage:4,stage_countdown_sec:321,red_score:2,blue_score:1}],['RobotPosition',{x:20,y:6,z:0,yaw:45,robot_id:1}],['GlobalUnitStatus',{base_health:9000,enemy_base_health:8000,outpost_R_health:1000,outpost_B_health:500,total_CP_ally:12,total_CP_enemy:4,robot_health:[300,0]}],['RobotDynamicStatus',{current_health:250,current_heat:32,remaining_ammo:80}]])await publisher.publishAsync(topic,root.lookupType(topic).encode(data).finish(),{qos:1});
+ await page.waitForFunction(()=>document.getElementById('countdown').textContent==='05:21');
+ const state=await page.evaluate(()=>window.rm27.getState());assert.equal(state.robots[1].hp,250);assert.equal(state.robots[3].hp,0);assert.equal(state.robots[101].position,null);assert.equal(state.robots[1].position.x,20);assert.equal(await page.locator('#red-score').textContent(),'12');assert.equal(await page.locator('#blue-score').textContent(),'4');assert.equal(state.units.outpost_R_health,1000);assert.equal(state.units.outpost_B_health,500);
+ await page.waitForTimeout(3500);assert.match(await page.locator('#robot-row-1 small').textContent(),/过期/);
+ await page.getByRole('button',{name:'打开连接与坐标设置'}).click();await page.selectOption('select[name=mode]','demo');await page.getByRole('button',{name:'应用并连接'}).click();
+ await page.waitForTimeout(1200);await page.getByRole('button',{name:'俯视 V',exact:true}).click();await page.screenshot({path:'artifacts/top.png'});
+ await page.setViewportSize({width:700,height:900});await page.screenshot({path:'artifacts/compact.png'});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);assert.deepEqual(errors,[]);console.log('PASS: CAD model, demo, live MQTT/Protobuf, no fake positions, HP zero, stale data, views, compact layout, no browser errors.');
+}finally{await publisher?.endAsync(true);await browser.close();await new Promise(r=>tcp.close(r));await new Promise(r=>broker.close(r));}
